@@ -24,16 +24,13 @@ export type InputType =
   | "select";
 
 export interface RelationDefinition {
-  targetTableName: string;
   targetTableSlug: string;
   targetColumn: string;
-  targetDisplayName: string;
   displayName: string;
 }
 
 export interface ColumnDefinition {
   name: string;
-  dbName: string;
   nativeType: string;
   label: string;
   kind: ValueKind;
@@ -41,8 +38,6 @@ export interface ColumnDefinition {
   required: boolean;
   editable: boolean;
   nullable: boolean;
-  hasDefault: boolean;
-  autoUpdate: boolean;
   inputType: InputType;
   relation: RelationDefinition | null;
 }
@@ -51,10 +46,8 @@ export interface TableDefinition {
   tableName: string;
   slug: string;
   primaryKey: string | null;
-  primaryKeyColumn: string | null;
   columns: ColumnDefinition[];
   supportsCrud: boolean;
-  title: string;
   displayName: string;
 }
 
@@ -107,14 +100,7 @@ export interface InlineEditActionResult {
   appliedCount: number;
 }
 
-export interface QueryActionState {
-  sql: string;
-  rows: Record<string, unknown>[];
-  columns: string[];
-  rowCount: number;
-  errorMessage: string | null;
-  submitted: boolean;
-}
+export type QueryActionState = RawQueryView;
 
 export interface RelationPickerResponse {
   table: TableDefinition;

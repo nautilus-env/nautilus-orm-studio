@@ -3,7 +3,7 @@
 import { useActionState } from "react";
 
 import { runRawQueryAction } from "@/app/actions";
-import { CopyValue } from "@/components/studio/copy-value";
+import { ResultGrid } from "@/components/studio/result-grid";
 import type { QueryActionState } from "@/lib/nautilus/types";
 
 export function QueryPanel({
@@ -62,30 +62,7 @@ export function QueryPanel({
         ) : null}
 
         {state.columns.length > 0 ? (
-          <div className="min-h-0 overflow-auto rounded-[1.25rem] border border-(--line)">
-            <table className="min-w-full text-sm">
-              <thead className="sticky -top-px z-10 border-b border-(--line) text-left text-xs uppercase text-white bg-zinc-900 shadow-[0_1px_0_var(--color-line)]">
-                <tr>
-                  {state.columns.map((column) => (
-                    <th key={column} className="px-6 py-3 font-medium">
-                      {column}
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-(--line)">
-                {state.rows.map((row, index) => (
-                  <tr key={index} className="transition hover:bg-zinc-900/50">
-                    {state.columns.map((column) => (
-                      <td key={column} className="max-w-[18rem] px-6 py-4 align-middle text-zinc-200">
-                        <CopyValue value={row[column]} />
-                      </td>
-                    ))}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <ResultGrid columns={state.columns.map((key) => ({ key, name: key }))} rows={state.rows} label="Query results" />
         ) : state.submitted && !state.errorMessage ? (
           <div className="rounded-[1.25rem] border border-(--line) bg-(--panel-2) px-4 py-10 text-center text-sm text-(--muted)">
             Query executed successfully, but no rows were returned.

@@ -1,7 +1,7 @@
 import "server-only";
 import { cache } from "react";
 
-import { getFirstDelegate } from "@/lib/nautilus/client";
+import { getDb } from "@/lib/nautilus/client";
 import { getSchemaConfig } from "@/lib/nautilus/schema";
 import { getSqlDialect } from "@/lib/nautilus/sql";
 import type {
@@ -39,7 +39,7 @@ function parseMysqlEnumValues(columnType: string): string[] {
 }
 
 async function listTableNames(provider: ReturnType<typeof getSchemaConfig>["provider"]): Promise<string[]> {
-  const delegate = await getFirstDelegate();
+  const delegate = await getDb();
 
   switch (provider) {
     case "postgresql": {
@@ -88,7 +88,7 @@ async function loadEnumValues(
     return new Map();
   }
 
-  const delegate = await getFirstDelegate();
+  const delegate = await getDb();
   const rows = await delegate.rawStmtQuery(`
     SELECT
       t.typname AS udt_name,
@@ -119,7 +119,7 @@ async function loadForeignKeys(
   provider: ReturnType<typeof getSchemaConfig>["provider"],
   tableNames: string[],
 ): Promise<Map<string, RelationDefinition>> {
-  const delegate = await getFirstDelegate();
+  const delegate = await getDb();
   const rows =
     provider === "postgresql"
       ? await delegate.rawStmtQuery(`
@@ -178,10 +178,8 @@ async function loadForeignKeys(
     const displayName = titleize(targetTableName);
 
     relations.set(`${sourceTableName.toLowerCase()}:${sourceColumnName.toLowerCase()}`, {
-      targetTableName,
       targetTableSlug: slugifyTableName(targetTableName),
       targetColumn: targetColumnName,
-      targetDisplayName: displayName,
       displayName,
     });
   }
@@ -193,7 +191,7 @@ async function loadPrimaryKeyColumns(
   provider: ReturnType<typeof getSchemaConfig>["provider"],
   tableName: string,
 ): Promise<string[]> {
-  const delegate = await getFirstDelegate();
+  const delegate = await getDb();
 
   switch (provider) {
     case "postgresql": {
@@ -248,7 +246,7 @@ async function loadColumns(
   enumValuesByType: Map<string, string[]>,
   foreignKeys: Map<string, RelationDefinition>,
 ) {
-  const delegate = await getFirstDelegate();
+  const delegate = await getDb();
   const rows =
     provider === "postgresql"
       ? await delegate.rawStmtQuery(
@@ -296,7 +294,7 @@ async function loadColumns(
           `);
 
   return (rows as unknown as CatalogColumnRow[]).map((row) => {
-    const dbName = String(row.column_name);
+    const name = String(row.column_name);
     const udtName = String(row.udt_name ?? "");
     const extra = String(row.extra ?? "").toLowerCase();
     const nullable = String(row.is_nullable).toUpperCase() === "YES";
@@ -314,22 +312,19 @@ async function loadColumns(
       provider === "mysql"
         ? parseMysqlEnumValues(String(row.column_type ?? row.udt_name ?? ""))
         : enumValuesByType.get(udtName.toLowerCase()) ?? [];
-    const autoUpdate = isAutoUpdateColumn(dbName);
+    const autoUpdate = isAutoUpdateColumn(name);
 
     const column: ColumnDefinition = {
-      name: dbName,
-      dbName,
+      name,
       nativeType: udtName,
-      label: titleize(dbName),
+      label: titleize(name),
       kind,
       enumValues,
       required: !nullable && !hasDefault && !generated && !autoUpdate,
       editable: !generated,
       nullable,
-      hasDefault,
-      autoUpdate,
-      inputType: inferInputType(dbName, kind, enumValues.length > 0),
-      relation: foreignKeys.get(`${tableName.toLowerCase()}:${dbName.toLowerCase()}`) ?? null,
+      inputType: inferInputType(name, kind, enumValues.length > 0),
+      relation: foreignKeys.get(`${tableName.toLowerCase()}:${name.toLowerCase()}`) ?? null,
     };
 
     return column;
@@ -344,7 +339,6 @@ export const loadRegistry = cache(async (): Promise<TableRegistryData> => {
     loadForeignKeys(provider, tableNames),
   ]);
 
-  const resolvedTables: TableDefinition[] = [];
   const aliases = new Map<string, string>();
 
   const tablePromises = tableNames.map(async (tableName) => {
@@ -353,44 +347,35 @@ export const loadRegistry = cache(async (): Promise<TableRegistryData> => {
       loadColumns(provider, tableName, enumValuesByType, foreignKeys),
     ]);
 
-    const primaryKeyColumn = primaryKeyColumns.length === 1 ? primaryKeyColumns[0] : null;
-    const primaryKey = primaryKeyColumn;
+    const primaryKey = primaryKeyColumns.length === 1 ? primaryKeyColumns[0] : null;
     const slug = slugifyTableName(tableName);
     const displayName = titleize(tableName);
-    const supportsCrud = Boolean(primaryKeyColumn && primaryKey);
+    const supportsCrud = Boolean(primaryKey);
 
     const table: TableDefinition = {
       tableName,
       slug,
       primaryKey,
-      primaryKeyColumn,
       columns: columns.map((column) => ({
         ...column,
-        required:
-          column.required && !(
-            column.hasDefault
-            || column.autoUpdate
-            || column.dbName === primaryKeyColumn
-          ),
+        required: column.required && column.name !== primaryKey,
       })),
       supportsCrud,
-      title: displayName,
       displayName,
     };
 
     return table;
   });
 
-  const resolvedTablesData = await Promise.all(tablePromises);
+  const tables = await Promise.all(tablePromises);
 
-  for (const table of resolvedTablesData) {
-    resolvedTables.push(table);
+  for (const table of tables) {
     aliases.set(table.slug.toLowerCase(), table.slug);
     aliases.set(table.tableName.toLowerCase(), table.slug);
   }
 
   return {
-    tables: resolvedTables,
+    tables,
     aliases,
   };
 });

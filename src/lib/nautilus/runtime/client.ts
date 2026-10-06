@@ -8,6 +8,7 @@ type RpcResult = Record<string, unknown>;
 interface PendingRequest {
   resolve: (value: RpcResult) => void;
   reject: (error: Error) => void;
+  data: unknown[];
 }
 
 export type IsolationLevel =
@@ -26,37 +27,10 @@ export interface RawQueryRunner {
   rawStmtQuery(sql: string, params?: unknown[]): Promise<Record<string, unknown>[]>;
 }
 
-export class NautilusTransactionClient implements RawQueryRunner {
-  constructor(
-    private readonly parent: NautilusRuntimeClient,
-    private readonly transactionId: string,
-  ) {}
-
-  async rawQuery(sql: string): Promise<Record<string, unknown>[]> {
-    const result = await this.parent._rpc("query.rawQuery", {
-      protocolVersion: 1,
-      sql,
-      transactionId: this.transactionId,
-    });
-    return Array.isArray(result.data) ? (result.data as Record<string, unknown>[]) : [];
-  }
-
-  async rawStmtQuery(sql: string, params?: unknown[]): Promise<Record<string, unknown>[]> {
-    const result = await this.parent._rpc("query.rawStmtQuery", {
-      protocolVersion: 1,
-      sql,
-      params: params ?? [],
-      transactionId: this.transactionId,
-    });
-    return Array.isArray(result.data) ? (result.data as Record<string, unknown>[]) : [];
-  }
-}
-
 export class NautilusRuntimeClient implements RawQueryRunner {
   private readonly engine: EngineProcess;
   private nextId = 0;
   private readonly pending = new Map<number, PendingRequest>();
-  private readonly partialData = new Map<number, unknown[]>();
   private rl: readline.Interface | null = null;
 
   constructor(
@@ -89,43 +63,41 @@ export class NautilusRuntimeClient implements RawQueryRunner {
       reject(error);
     }
     this.pending.clear();
-    this.partialData.clear();
   }
 
-  async rawQuery(sql: string): Promise<Record<string, unknown>[]> {
-    const result = await this._rpc("query.rawQuery", {
-      protocolVersion: 1,
-      sql,
-    });
-    return Array.isArray(result.data) ? (result.data as Record<string, unknown>[]) : [];
+  private async query(method: string, params: Record<string, unknown>) {
+    const result = await this._rpc(method, params);
+    return Array.isArray(result.data) ? result.data as Record<string, unknown>[] : [];
   }
 
-  async rawStmtQuery(sql: string, params?: unknown[]): Promise<Record<string, unknown>[]> {
-    const result = await this._rpc("query.rawStmtQuery", {
-      protocolVersion: 1,
-      sql,
-      params: params ?? [],
-    });
-    return Array.isArray(result.data) ? (result.data as Record<string, unknown>[]) : [];
+  rawQuery(sql: string) {
+    return this.query("query.rawQuery", { sql });
+  }
+
+  rawStmtQuery(sql: string, params: unknown[] = []) {
+    return this.query("query.rawStmtQuery", { sql, params });
   }
 
   async $transaction<T>(
-    fn: (tx: NautilusTransactionClient) => Promise<T>,
+    fn: (tx: RawQueryRunner) => Promise<T>,
     options?: TransactionOptions,
   ): Promise<T> {
-    const transactionId = await this.startTransaction(
-      options?.timeout ?? 5000,
-      options?.isolationLevel,
-    );
-
-    const tx = new NautilusTransactionClient(this, transactionId);
+    const result = await this._rpc("transaction.start", {
+      timeoutMs: options?.timeout ?? 5000,
+      isolationLevel: options?.isolationLevel,
+    });
+    const transactionId = String(result.id);
+    const tx: RawQueryRunner = {
+      rawQuery: (sql) => this.query("query.rawQuery", { sql, transactionId }),
+      rawStmtQuery: (sql, params = []) => this.query("query.rawStmtQuery", { sql, params, transactionId }),
+    };
 
     try {
       const result = await fn(tx);
-      await this.commitTransaction(transactionId);
+      await this._rpc("transaction.commit", { id: transactionId });
       return result;
     } catch (error) {
-      await this.rollbackTransaction(transactionId);
+      try { await this._rpc("transaction.rollback", { id: transactionId }); } catch {}
       throw error;
     }
   }
@@ -137,7 +109,7 @@ export class NautilusRuntimeClient implements RawQueryRunner {
 
     const id = ++this.nextId;
     const payload = JSON.stringify(
-      { jsonrpc: "2.0", id, method, params },
+      { jsonrpc: "2.0", id, method, params: { protocolVersion: 1, ...params } },
       (_key, value) => {
         if (value instanceof Date) return value.toISOString();
         if (value instanceof Buffer) return value.toString("base64");
@@ -146,7 +118,7 @@ export class NautilusRuntimeClient implements RawQueryRunner {
     ) + "\n";
 
     return await new Promise<RpcResult>((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
+      this.pending.set(id, { resolve, reject, data: [] });
 
       this.engine.stdin?.write(payload, (error) => {
         if (!error) return;
@@ -186,17 +158,13 @@ export class NautilusRuntimeClient implements RawQueryRunner {
       if (response.partial === true) {
         const result = response.result as Record<string, unknown> | undefined;
         const chunkData = Array.isArray(result?.data) ? result.data : [];
-        if (!this.partialData.has(id)) {
-          this.partialData.set(id, []);
-        }
-        this.partialData.get(id)?.push(...chunkData);
+        pending.data.push(...chunkData);
         return;
       }
 
       this.pending.delete(id);
 
       if (response.error && typeof response.error === "object") {
-        this.partialData.delete(id);
         const error = response.error as Record<string, unknown>;
         pending.reject(
           errorFromCode(
@@ -210,11 +178,9 @@ export class NautilusRuntimeClient implements RawQueryRunner {
 
       let result = (response.result as RpcResult | undefined) ?? {};
 
-      if (this.partialData.has(id)) {
-        const accumulated = this.partialData.get(id) ?? [];
-        this.partialData.delete(id);
+      if (pending.data.length > 0) {
         const data = Array.isArray(result.data) ? result.data : [];
-        result = { ...result, data: [...accumulated, ...data] };
+        result = { ...result, data: [...pending.data, ...data] };
       }
 
       pending.resolve(result);
@@ -232,7 +198,6 @@ export class NautilusRuntimeClient implements RawQueryRunner {
       }
 
       this.pending.clear();
-      this.partialData.clear();
     });
   }
 
@@ -242,7 +207,6 @@ export class NautilusRuntimeClient implements RawQueryRunner {
 
     try {
       response = await this._rpc("engine.handshake", {
-        protocolVersion: 1,
         clientName: "nautilus-studio",
         clientVersion,
       });
@@ -258,31 +222,5 @@ export class NautilusRuntimeClient implements RawQueryRunner {
         `Protocol version mismatch: engine uses ${String(protocolVersion)}, client expects 1`,
       );
     }
-  }
-
-  private async startTransaction(timeoutMs: number, isolationLevel?: IsolationLevel) {
-    const params: Record<string, unknown> = { protocolVersion: 1, timeoutMs };
-    if (isolationLevel) {
-      params.isolationLevel = isolationLevel;
-    }
-
-    const result = await this._rpc("transaction.start", params);
-    return String(result.id);
-  }
-
-  private async commitTransaction(transactionId: string) {
-    await this._rpc("transaction.commit", {
-      protocolVersion: 1,
-      id: transactionId,
-    });
-  }
-
-  private async rollbackTransaction(transactionId: string) {
-    try {
-      await this._rpc("transaction.rollback", {
-        protocolVersion: 1,
-        id: transactionId,
-      });
-    } catch {}
   }
 }

@@ -110,27 +110,7 @@ export class EngineProcess {
   }
 
   private loadDotenv(schemaPath: string) {
-    const dirs: string[] = [];
-    const seen = new Set<string>();
-
-    let dir = path.resolve(path.dirname(schemaPath));
-    while (true) {
-      if (!seen.has(dir)) {
-        dirs.push(dir);
-        seen.add(dir);
-      }
-
-      const parent = path.dirname(dir);
-      if (parent === dir) break;
-      dir = parent;
-    }
-
-    const cwd = process.cwd();
-    if (!seen.has(cwd)) {
-      dirs.push(cwd);
-    }
-
-    for (const candidateDir of dirs) {
+    for (const candidateDir of this.searchRoots(schemaPath)) {
       const envPath = path.join(candidateDir, ".env");
       if (!fs.existsSync(envPath)) continue;
 

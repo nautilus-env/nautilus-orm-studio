@@ -1,13 +1,13 @@
 import "server-only";
 
-import { getFirstDelegate } from "@/lib/nautilus/client";
+import { getDb } from "@/lib/nautilus/client";
 import type { RawQueryView } from "@/lib/nautilus/types";
 import { userVisibleError } from "@/lib/nautilus/utils";
 
 export async function runRawQuery(
   sql: string,
 ): Promise<RawQueryView> {
-  const delegate = await getFirstDelegate();
+  const delegate = await getDb();
   const normalizedSql = sql.trim();
 
   if (!normalizedSql) {

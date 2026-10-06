@@ -1,5 +1,7 @@
 "use client";
 
+import { useEffect } from "react";
+
 import { FieldControl } from "@/components/studio/field-control";
 import type { ColumnDefinition } from "@/lib/nautilus/types";
 
@@ -8,12 +10,19 @@ export function InlineCellEditor({
   row,
   onClose,
   onStage,
+  onEditingChange,
 }: {
   column: ColumnDefinition;
   row: Record<string, unknown>;
   onClose: () => void;
   onStage: (formData: FormData) => void;
+  onEditingChange: (editing: boolean) => void;
 }) {
+  useEffect(() => {
+    onEditingChange(true);
+    return () => onEditingChange(false);
+  }, [onEditingChange]);
+
   const handleKeyDown: React.KeyboardEventHandler<
     HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement
   > = (event) => {

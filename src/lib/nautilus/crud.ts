@@ -1,6 +1,7 @@
 import "server-only";
 
-import { getDb, getFirstDelegate, type NautilusDelegate } from "@/lib/nautilus/client";
+import { getDb, type NautilusDelegate } from "@/lib/nautilus/client";
+import { coerceFieldValue as coerceValue, InvalidFieldValueError, readFieldValue } from "@/lib/nautilus/field-value";
 import {
   findFilterColumn,
   formatFilterSearchValue,
@@ -11,13 +12,13 @@ import {
   splitFilterExpression,
 } from "@/lib/nautilus/filter";
 import { getTable, loadRegistry } from "@/lib/nautilus/metadata";
-import { normalizeValue } from "@/lib/nautilus/presentation";
 import type {
   ColumnDefinition,
   InlineEditEntry,
   InlineEditOperation,
   TableDefinition,
   TableView,
+  RelationPickerResponse,
 } from "@/lib/nautilus/types";
 import { getSqlDialect } from "@/lib/nautilus/sql";
 import { userVisibleError } from "@/lib/nautilus/utils";
@@ -26,7 +27,6 @@ export class AdminError extends Error {}
 export class TableNotFoundError extends AdminError {}
 export class UnsupportedTableError extends AdminError {}
 export class RecordNotFoundError extends AdminError {}
-export class InvalidFieldValueError extends AdminError {}
 export class PartialInlineApplyError extends AdminError {
   constructor(message: string, readonly appliedCount: number) {
     super(message);
@@ -90,7 +90,7 @@ async function getSupportedTable(
 
   return {
     table,
-    delegate: await getFirstDelegate(),
+    delegate: await getDb(),
   };
 }
 
@@ -110,32 +110,6 @@ function requirePrimaryKeyColumn(table: TableDefinition): ColumnDefinition {
   return column;
 }
 
-function normalizeSqlRecord(table: TableDefinition, record: Record<string, unknown>): Record<string, unknown> {
-  const normalized: Record<string, unknown> = {};
-  const consumed = new Set<string>();
-
-  for (const column of table.columns) {
-    if (column.dbName in record) {
-      normalized[column.name] = normalizeValue(record[column.dbName]);
-      consumed.add(column.dbName);
-      continue;
-    }
-    if (column.name in record) {
-      normalized[column.name] = normalizeValue(record[column.name]);
-      consumed.add(column.name);
-    }
-  }
-
-  for (const [key, value] of Object.entries(record)) {
-    if (consumed.has(key)) {
-      continue;
-    }
-    normalized[key] = normalizeValue(value);
-  }
-
-  return normalized;
-}
-
 async function selectRowByPrimaryKey(
   table: TableDefinition,
   delegate: NautilusDelegate,
@@ -151,7 +125,7 @@ async function selectRowByPrimaryKey(
     params,
   );
 
-  return rows[0] ? normalizeSqlRecord(table, rows[0]) : null;
+  return rows[0] ? rows[0] : null;
 }
 
 function buildPrimaryKeyPredicate(
@@ -163,8 +137,8 @@ function buildPrimaryKeyPredicate(
   const primaryKeyColumn = requirePrimaryKeyColumn(table);
   params.push(coerceValue(pk, primaryKeyColumn));
   const qualifiedName = tableAlias
-    ? `${tableAlias}.${quoteIdentifier(primaryKeyColumn.dbName)}`
-    : quoteIdentifier(primaryKeyColumn.dbName);
+    ? `${tableAlias}.${quoteIdentifier(primaryKeyColumn.name)}`
+    : quoteIdentifier(primaryKeyColumn.name);
   return `${qualifiedName} = ${parameterExpressionForColumn(primaryKeyColumn, params.length)}`;
 }
 
@@ -182,7 +156,7 @@ function buildRawFilterClause(
 
   const buildPredicate = (column: ColumnDefinition, value: string, operator?: string | null) => {
     const normalizedOperator = normalizeFilterOperator(operator);
-    const columnExpression = `t.${quoteIdentifier(column.dbName)}`;
+    const columnExpression = `t.${quoteIdentifier(column.name)}`;
 
     if (normalizedOperator === "contains") {
       params.push(formatFilterSearchValue(value, normalizedOperator));
@@ -245,14 +219,12 @@ function buildRawOrderClause(
 ): string {
   const primaryKeyColumn = requirePrimaryKeyColumn(table);
   const selectedColumn =
-    table.columns.find(
-      (candidate) => candidate.name === orderColumn || candidate.dbName === orderColumn,
-    ) ?? primaryKeyColumn;
+    table.columns.find((candidate) => candidate.name === orderColumn) ?? primaryKeyColumn;
   const direction = ((orderDirection ?? "").trim().toLowerCase() === "desc" ? "desc" : "asc").toUpperCase();
-  const clauses = [`t.${quoteIdentifier(selectedColumn.dbName)} ${direction}`];
+  const clauses = [`t.${quoteIdentifier(selectedColumn.name)} ${direction}`];
 
-  if (selectedColumn.dbName !== primaryKeyColumn.dbName) {
-    clauses.push(`t.${quoteIdentifier(primaryKeyColumn.dbName)} ${direction}`);
+  if (selectedColumn.name !== primaryKeyColumn.name) {
+    clauses.push(`t.${quoteIdentifier(primaryKeyColumn.name)} ${direction}`);
   }
 
   return `ORDER BY ${clauses.join(", ")}`;
@@ -270,7 +242,7 @@ async function selectRowsWithRawSql(
     take?: number;
   },
 ) {
-  const delegate = await getFirstDelegate();
+  const delegate = await getDb();
   const params: unknown[] = [];
   const sqlParts = [
     `SELECT * FROM ${tableReference(table.tableName)} AS t`,
@@ -299,7 +271,7 @@ async function selectRowsWithRawSql(
   }
 
   const rows = await delegate.rawStmtQuery(sqlParts.join(" "), params);
-  return rows.map((row) => normalizeSqlRecord(table, row));
+  return rows;
 }
 
 async function countRowsWithRawSql(
@@ -325,131 +297,9 @@ async function countRowsWithRawSql(
     sqlParts.push(whereClause);
   }
 
-  const delegate = await getFirstDelegate();
+  const delegate = await getDb();
   const rows = await delegate.rawStmtQuery(sqlParts.join(" "), params);
   return Number(rows[0]?.total_rows ?? 0);
-}
-
-function normalizeEmptyValue(rawValue: FormDataEntryValue | null, column: ColumnDefinition): string | null {
-  if (rawValue === null) {
-    return null;
-  }
-  const normalized = String(rawValue);
-  
-  if (column.kind === "string") {
-    if (column.nullable) {
-      if (normalized === "NULL") {
-        return null;
-      }
-      if (normalized === "" && (column.relation || column.enumValues.length > 0)) {
-        return null;
-      }
-    }
-    return normalized;
-  }
-  
-  if (column.kind === "list" || column.kind === "json") {
-    if (normalized === "NULL" && column.nullable) {
-      return null;
-    }
-    const trimmed = normalized.trim();
-    return trimmed || null;
-  }
-  
-  const trimmed = normalized.trim();
-  return trimmed || null;
-}
-
-function validateMissingValue(column: ColumnDefinition) {
-  if (column.required && !column.nullable) {
-    throw new InvalidFieldValueError(`${column.label} is required.`);
-  }
-}
-
-function coerceJsonObject(rawValue: string, column: ColumnDefinition): Record<string, unknown> {
-  const parsed = JSON.parse(rawValue);
-  if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-    return parsed as Record<string, unknown>;
-  }
-  throw new InvalidFieldValueError(`${column.label} must be a JSON object.`);
-}
-
-function splitListValue(value: string): string[] {
-  return value
-    .replaceAll("\r", "\n")
-    .replaceAll(",", "\n")
-    .split("\n")
-    .map((part) => part.trim())
-    .filter(Boolean);
-}
-
-function coerceValue(rawValue: FormDataEntryValue | null, column: ColumnDefinition): unknown {
-  if (column.inputType === "checkbox" && rawValue === null) {
-    return column.nullable ? null : false;
-  }
-
-  const normalized = normalizeEmptyValue(rawValue, column);
-  if (normalized === null) {
-    validateMissingValue(column);
-    return null;
-  }
-
-  try {
-    if (column.enumValues.length > 0) {
-      if (!column.enumValues.includes(normalized)) {
-        throw new InvalidFieldValueError(
-          `${column.label} must be one of: ${column.enumValues.join(", ")}.`,
-        );
-      }
-      return normalized;
-    }
-
-    switch (column.kind) {
-      case "boolean": {
-        const value = normalized.toLowerCase();
-        if (["1", "true", "yes", "on"].includes(value)) {
-          return true;
-        }
-        if (["0", "false", "no", "off"].includes(value)) {
-          return false;
-        }
-        throw new InvalidFieldValueError(`${column.label} must be a valid boolean value.`);
-      }
-      case "int":
-        return Number.parseInt(normalized, 10);
-      case "float":
-      case "decimal":
-        return Number(normalized);
-      case "date":
-      case "datetime":
-      case "time":
-        return new Date(normalized);
-      case "uuid":
-      case "string":
-        return normalized;
-      case "json":
-        return coerceJsonObject(normalized, column);
-      case "list": {
-        const parsed = JSON.parse(normalized);
-        if (Array.isArray(parsed)) return parsed;
-        if (parsed !== undefined) throw new InvalidFieldValueError(`${column.label} must be a JSON array.`);
-        
-        const values = splitListValue(normalized);
-        if (values.length > 0) return values;
-        
-        throw new InvalidFieldValueError(
-          `${column.label} must be a JSON array or a comma-separated list.`,
-        );
-      }
-      default:
-        return normalized;
-    }
-  } catch (error) {
-    if (error instanceof InvalidFieldValueError) {
-      throw error;
-    }
-    throw new InvalidFieldValueError(`${column.label} has an invalid value.`);
-  }
 }
 
 function getSubmittedColumns(table: TableDefinition, formData: FormData): ColumnDefinition[] {
@@ -482,30 +332,11 @@ function extractFormPayload(table: TableDefinition, formData: FormData): Record<
   const payload: Record<string, unknown> = {};
 
   for (const column of getSubmittedColumns(table, formData)) {
-    if (formData.get(`${column.name}-is-null`) !== null) {
-      if (!column.nullable) {
-        throw new InvalidFieldValueError(`${column.label} cannot be null.`);
-      }
-      payload[column.name] = null;
+    if (formData.get(column.name) === null && column.name === table.primaryKey && !formData.has(`${column.name}-is-null`)) {
       continue;
     }
-
-    const rawValue = formData.get(column.name);
-    if (rawValue === null && column.name === table.primaryKey) {
-      continue;
-    }
-
-    const coerced =
-      column.inputType === "checkbox" && rawValue === null
-        ? false
-        : coerceValue(rawValue, column);
-    if (coerced === null) {
-      if (column.nullable) {
-        payload[column.name] = null;
-      }
-      continue;
-    }
-    payload[column.name] = coerced;
+    const value = readFieldValue(column, formData);
+    if (value !== null || column.nullable) payload[column.name] = value;
   }
 
   if (Object.keys(payload).length === 0) {
@@ -531,7 +362,7 @@ function buildRawUpdateStatement(
 
     params.push(payload[column.name]);
     assignments.push(
-      `${quoteIdentifier(column.dbName)} = ${parameterExpressionForColumn(column, params.length)}`,
+      `${quoteIdentifier(column.name)} = ${parameterExpressionForColumn(column, params.length)}`,
     );
   }
 
@@ -565,7 +396,7 @@ function buildRawInsertStatement(
     }
 
     params.push(payload[column.name]);
-    columnNames.push(quoteIdentifier(column.dbName));
+    columnNames.push(quoteIdentifier(column.name));
     values.push(parameterExpressionForColumn(column, params.length));
   }
 
@@ -635,7 +466,7 @@ async function executeUpdateRow(
       throw new RecordNotFoundError(`Record ${JSON.stringify(pk)} was not found.`);
     }
 
-    return normalizeSqlRecord(table, rows[0]);
+    return rows[0];
   }
 
   const record = await selectRowByPrimaryKey(table, delegate, pk);
@@ -663,21 +494,8 @@ export async function listRows(
   const pageSize = options?.pageSize ?? 25;
   const skip = Math.max(page - 1, 0) * pageSize;
 
-  const rows = await selectRowsWithRawSql(table, {
-    filterText: options?.filterText ?? "",
-    filterColumn: options?.filterColumn,
-    filterOperator: options?.filterOperator,
-    orderColumn: options?.orderColumn,
-    orderDirection: options?.orderDirection ?? "asc",
-    skip,
-    take: pageSize,
-  });
-  const total = await countRowsWithRawSql(table, {
-    filterText: options?.filterText ?? "",
-    filterColumn: options?.filterColumn,
-    filterOperator: options?.filterOperator,
-  });
-
+  const rows = await selectRowsWithRawSql(table, { ...options, skip, take: pageSize });
+  const total = await countRowsWithRawSql(table, options ?? {});
   return [rows, total];
 }
 
@@ -687,19 +505,6 @@ export async function listAllRows(tableName: string): Promise<Record<string, unk
     orderColumn: requirePrimaryKey(table),
     orderDirection: "asc",
   });
-}
-
-export async function getRow(
-  tableName: string,
-  pk: string,
-): Promise<Record<string, unknown>> {
-  const { table, delegate } = await getSupportedTable(tableName);
-  const record = await selectRowByPrimaryKey(table, delegate, pk);
-  if (!record) {
-    throw new RecordNotFoundError(`${table.displayName} record ${JSON.stringify(pk)} was not found.`);
-  }
-
-  return record;
 }
 
 export async function createRow(
@@ -718,7 +523,7 @@ export async function createRow(
       throw new RecordNotFoundError(`Insert into ${table.displayName} returned no rows.`);
     }
 
-    return normalizeSqlRecord(table, rows[0]);
+    return rows[0];
   }
 
   const insertedPk = await resolveInsertedPrimaryKeyValue(table, delegate, payload);
@@ -768,9 +573,7 @@ export async function applyInlineEdits(
           throw error;
         }
 
-        const message =
-          error instanceof AdminError ? error.message : userVisibleError(error);
-        throw new PartialInlineApplyError(message, appliedCount);
+        throw new PartialInlineApplyError(userVisibleError(error), appliedCount);
       }
     }
 
@@ -779,7 +582,7 @@ export async function applyInlineEdits(
 
   if (options?.useTransaction) {
     const db = await getDb();
-    return db.$transaction(async (tx) => runEdits(tx));
+    return db.$transaction(runEdits);
   }
 
   return runEdits(delegate);
@@ -817,7 +620,7 @@ export async function deleteRow(
     ].join(" "),
     params,
   );
-  return rows[0] ? normalizeSqlRecord(table, rows[0]) : null;
+  return rows[0] ? rows[0] : null;
 }
 
 export async function buildTableView(
@@ -838,76 +641,31 @@ export async function buildTableView(
     throw new TableNotFoundError(`Unknown table ${JSON.stringify(tableSlug)}.`);
   }
 
-  const page = options?.page ?? 1;
-  const pageSize = options?.pageSize ?? 25;
-
+  const view: TableView = {
+    ...options,
+    table,
+    rows: [],
+    totalRows: 0,
+    page: options?.page ?? 1,
+    pageSize: options?.pageSize ?? 25,
+    totalPages: 1,
+    errorMessage: null,
+  };
   if (!table.supportsCrud) {
-    return {
-      table,
-      rows: [],
-      totalRows: 0,
-      page,
-      pageSize,
-      totalPages: 1,
-      filterText: options?.filterText,
-      filterColumn: options?.filterColumn,
-      filterOperator: options?.filterOperator,
-      orderColumn: options?.orderColumn,
-      orderDirection: options?.orderDirection,
-      errorMessage: "CRUD is not available for this table yet.",
-    };
+    return { ...view, errorMessage: "CRUD is not available for this table yet." };
   }
 
   try {
-    const [rows, totalRows] = await listRows(table.slug, {
-      page,
-      pageSize,
-      filterText: options?.filterText,
-      filterColumn: options?.filterColumn,
-      filterOperator: options?.filterOperator,
-      orderColumn: options?.orderColumn,
-      orderDirection: options?.orderDirection,
-    });
-    return {
-      table,
-      rows,
-      totalRows,
-      page,
-      pageSize,
-      totalPages: Math.max(1, Math.ceil(totalRows / pageSize)),
-      filterText: options?.filterText,
-      filterColumn: options?.filterColumn,
-      filterOperator: options?.filterOperator,
-      orderColumn: options?.orderColumn,
-      orderDirection: options?.orderDirection,
-      errorMessage: null,
-    };
+    const [rows, totalRows] = await listRows(table.slug, options);
+    return { ...view, rows, totalRows, totalPages: Math.max(1, Math.ceil(totalRows / view.pageSize)) };
   } catch (error) {
-    return {
-      table,
-      rows: [],
-      totalRows: 0,
-      page,
-      pageSize,
-      totalPages: 1,
-      filterText: options?.filterText,
-      filterColumn: options?.filterColumn,
-      filterOperator: options?.filterOperator,
-      orderColumn: options?.orderColumn,
-      orderDirection: options?.orderDirection,
-      errorMessage:
-        error instanceof AdminError ? error.message : userVisibleError(error),
-    };
+    return { ...view, errorMessage: userVisibleError(error) };
   }
 }
 
 export async function getRelationPickerData(
   tableSlug: string,
-): Promise<{
-  table: TableDefinition;
-  rows: Record<string, unknown>[];
-  errorMessage: string | null;
-}> {
+): Promise<RelationPickerResponse> {
   const table = await getTable(tableSlug);
 
   if (!table) {
@@ -932,7 +690,7 @@ export async function getRelationPickerData(
     return {
       table,
       rows: [],
-      errorMessage: error instanceof AdminError ? error.message : userVisibleError(error),
+      errorMessage: userVisibleError(error),
     };
   }
 }

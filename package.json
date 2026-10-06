@@ -1,20 +1,24 @@
 {
   "name": "next-app",
   "type": "module",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "scripts": {
     "generate:nautilus": "nautilus generate --schema ../schema.nautilus --no-install",
     "dev": "next dev",
+    "demo": "node scripts/demo.mjs",
+    "demo:seed": "node scripts/demo.mjs --seed-only",
     "build": "next build",
     "start": "next start",
     "lint": "eslint src"
   },
   "dependencies": {
     "@xyflow/react": "^12.10.2",
+    "cmdk": "^1.1.1",
     "dagre": "^0.8.5",
     "next": "16.2.2",
     "react": "19.2.4",
+    "react-data-grid": "7.0.0-beta.61",
     "react-dom": "19.2.4"
   },
   "devDependencies": {

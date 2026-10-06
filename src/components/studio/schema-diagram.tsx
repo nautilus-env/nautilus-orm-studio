@@ -5,6 +5,7 @@ import {
   Background,
   Controls,
   Handle,
+  MiniMap,
   Position,
   ReactFlow,
   useEdgesState,
@@ -138,11 +139,12 @@ export function SchemaDiagram({ tables }: { tables: TableDefinition[] }) {
         onEdgesChange={onEdgesChange}
         nodeTypes={nodeTypes}
         fitView
-        minZoom={0.1}
+        minZoom={0.02}
         className="bg-black/20"
       >
         <Background gap={16} size={1} color="#3f3f46" />
         <Controls className="bg-(--panel)! border-(--line) text-white" />
+        {tables.length > 20 ? <MiniMap pannable zoomable nodeColor="#52525b" maskColor="rgba(9,9,11,0.75)" className="bg-zinc-950! border border-(--line)" /> : null}
       </ReactFlow>
     </div>
   );

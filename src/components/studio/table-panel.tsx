@@ -2,6 +2,8 @@
 
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useMemo, useState, useTransition } from "react";
+import { DataGrid, SelectColumn, type Column } from "react-data-grid";
+import "react-data-grid/lib/styles.css";
 
 import {
   applyInlineEditsAction,
@@ -13,9 +15,9 @@ import { CopyValue } from "@/components/studio/copy-value";
 import { DeleteRowForm } from "@/components/studio/delete-row-form";
 import { FilterInput } from "@/components/studio/filter-input";
 import { InlineCellEditor } from "@/components/studio/inline-cell-editor";
-import { ResizableTh } from "@/components/studio/resizable-th";
 import { RowFormPanel } from "@/components/studio/row-form-panel";
 import { serializeRelationValue } from "@/lib/nautilus/presentation";
+import { readFieldValue } from "@/lib/nautilus/field-value";
 import type {
   ColumnDefinition,
   InlineEditEntry,
@@ -28,13 +30,6 @@ type StagedInlineEdit = InlineEditOperation & {
   key: string;
   columnName: string;
   previewValue: unknown;
-};
-
-const SELECTION_CHECKBOX_CLASS =
-  "h-4 w-4 cursor-pointer appearance-none rounded-sm border border-zinc-500 bg-transparent checked:border-blue-500 checked:bg-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500";
-const SELECTION_CHECKBOX_STYLE = {
-  backgroundImage:
-    "url(\"data:image/svg+xml,%3csvg viewBox='0 0 16 16' fill='white' xmlns='http://www.w3.org/2000/svg'%3e%3cpath d='M12.207 4.793a1 1 0 010 1.414l-5 5a1 1 0 01-1.414 0l-2-2a1 1 0 011.414-1.414L6.5 9.086l4.293-4.293a1 1 0 011.414 0z'/%3e%3c/svg%3e\")",
 };
 
 function inlineEditKey(rowKey: string, columnName: string): string {
@@ -50,45 +45,6 @@ function serializeInlineEntries(formData: FormData): InlineEditEntry[] {
 
 function rowKeyFor(primaryKey: string | null, row: RowRecord): string {
   return serializeRelationValue(row[primaryKey ?? ""]);
-}
-
-function previewInlineValue(column: ColumnDefinition, formData: FormData): unknown {
-  if (formData.get(`${column.name}-is-null`) !== null) {
-    return null;
-  }
-
-  if (column.inputType === "checkbox") {
-    return formData.get(column.name) !== null;
-  }
-
-  const rawValue = formData.get(column.name);
-  if (rawValue === null) {
-    return null;
-  }
-
-  const normalized = String(rawValue);
-  if (!normalized && column.nullable && (column.relation || column.enumValues.length > 0)) {
-    return null;
-  }
-
-  if (["int", "float", "decimal"].includes(column.kind)) {
-    const numericValue = Number(normalized);
-    return Number.isNaN(numericValue) ? normalized : numericValue;
-  }
-
-  if (column.kind === "json" || column.kind === "list") {
-    try {
-      return JSON.parse(normalized);
-    } catch {
-      return normalized;
-    }
-  }
-
-  return normalized;
-}
-
-function columnTypeLabel(column: ColumnDefinition): string {
-  return column.enumValues.length > 0 ? "enum" : column.kind;
 }
 
 function PanelMessage({
@@ -109,24 +65,6 @@ function PanelMessage({
   );
 }
 
-function SelectionCheckbox({
-  checked,
-  onChange,
-}: {
-  checked: boolean;
-  onChange: () => void;
-}) {
-  return (
-    <input
-      type="checkbox"
-      checked={checked}
-      onChange={onChange}
-      className={SELECTION_CHECKBOX_CLASS}
-      style={checked ? SELECTION_CHECKBOX_STYLE : undefined}
-    />
-  );
-}
-
 export function TablePanel({ view }: { view: TableView }) {
   const router = useRouter();
   const pathname = usePathname();
@@ -137,7 +75,7 @@ export function TablePanel({ view }: { view: TableView }) {
   const [selectedRowKeys, setSelectedRowKeys] = useState<Set<string>>(new Set());
   const [isEditing, setIsEditing] = useState(false);
   const [isCreating, setIsCreating] = useState(false);
-  const [editingCell, setEditingCell] = useState<{ rowKey: string; columnName: string } | null>(null);
+  const [hasOpenInlineEditor, setHasOpenInlineEditor] = useState(false);
   const [inlineError, setInlineError] = useState<string | null>(null);
   const [stagedEdits, setStagedEdits] = useState<StagedInlineEdit[]>([]);
   const [isPending, startTransition] = useTransition();
@@ -146,28 +84,15 @@ export function TablePanel({ view }: { view: TableView }) {
     [stagedEdits],
   );
   const displayedRows = useMemo(
-    () =>
-      view.rows.map((row) => {
-        const baseRow = row as RowRecord;
-        const displayedRow = { ...baseRow };
-
-        for (const column of table.columns) {
-          const stagedEdit = stagedEditsByKey.get(
-            inlineEditKey(rowKeyFor(primaryKey, baseRow), column.name),
-          );
-          if (stagedEdit) {
-            displayedRow[column.name] = stagedEdit.previewValue;
-          }
-        }
-
-        return displayedRow;
-      }),
-    [primaryKey, stagedEditsByKey, table.columns, view.rows],
+    () => view.rows.map((row) => ({
+      ...row,
+      ...Object.fromEntries(stagedEdits.filter((edit) => edit.pk === rowKeyFor(primaryKey, row))
+        .map((edit) => [edit.columnName, edit.previewValue])),
+    })),
+    [primaryKey, stagedEdits, view.rows],
   );
   const stagedEditCount = stagedEdits.length;
   const hasStagedEdits = stagedEditCount > 0;
-  const hasOpenInlineEditor = editingCell !== null;
-  const allRowsSelected = displayedRows.length > 0 && selectedRowKeys.size === displayedRows.length;
   const firstSelectedKey = selectedRowKeys.values().next().value as string | undefined;
   const selectedRow = firstSelectedKey
     ? displayedRows.find((row) => rowKeyFor(primaryKey, row as RowRecord) === firstSelectedKey)
@@ -201,7 +126,7 @@ export function TablePanel({ view }: { view: TableView }) {
       pk: rowKey,
       columnName: column.name,
       entries: serializeInlineEntries(formData),
-      previewValue: previewInlineValue(column, formData),
+      previewValue: readFieldValue(column, formData, true),
     };
 
     setStagedEdits((current) => {
@@ -210,7 +135,6 @@ export function TablePanel({ view }: { view: TableView }) {
         ? [...nextEdits, nextEdit]
         : nextEdits;
     });
-    setEditingCell(null);
     setInlineError(null);
   };
 
@@ -226,24 +150,9 @@ export function TablePanel({ view }: { view: TableView }) {
         stagedEdits.map(({ pk, entries }) => ({ pk, entries })),
         useTransaction,
       );
-      const shouldRefresh = result.appliedCount > 0 || !result.errorMessage;
-
-      if (result.appliedCount > 0) {
-        setStagedEdits((current) => current.slice(result.appliedCount));
-      }
-
-      if (result.errorMessage) {
-        setInlineError(result.errorMessage);
-        if (shouldRefresh) {
-          router.refresh();
-        }
-        return;
-      }
-
-      setStagedEdits([]);
-      if (shouldRefresh) {
-        router.refresh();
-      }
+      setStagedEdits((current) => result.errorMessage ? current.slice(result.appliedCount) : []);
+      setInlineError(result.errorMessage);
+      if (result.appliedCount > 0 || !result.errorMessage) router.refresh();
     });
   };
 
@@ -304,7 +213,6 @@ export function TablePanel({ view }: { view: TableView }) {
                 type="button"
                 onClick={() => {
                   setStagedEdits([]);
-                  setEditingCell(null);
                   setInlineError(null);
                 }}
                 disabled={isPending}
@@ -351,155 +259,59 @@ export function TablePanel({ view }: { view: TableView }) {
         </PanelMessage>
       ) : null}
 
-      <div className="min-h-0 flex-1 overflow-auto">
-        <table className="relative w-full text-sm" style={{ tableLayout: "fixed" }}>
-          <thead className="sticky -top-px z-10 border-b border-(--line) bg-zinc-900 text-left text-xs uppercase text-white shadow-[0_1px_0_var(--color-line)]">
-            <tr>
-              <th className="w-12 px-3 py-2 text-center align-middle">
-                <SelectionCheckbox checked={allRowsSelected} onChange={() => {
-                  setSelectedRowKeys(
-                    allRowsSelected
-                      ? new Set()
-                      : new Set(displayedRows.map((row) => rowKeyFor(primaryKey, row as RowRecord))),
-                  );
-                }}
-                />
-              </th>
-              {table.columns.map((column) => (
-                <ResizableTh key={column.name}>
-                  <button
-                    type="button"
-                    onClick={() =>
-                      updateSearch(
-                        view.orderColumn === column.name
-                          ? view.orderDirection === "asc"
-                            ? { order_column: column.name, order_direction: "desc" }
-                            : { order_column: null, order_direction: null }
-                          : { order_column: column.name, order_direction: "asc" },
-                      )}
-                    className="w-full cursor-pointer text-left transition"
-                  >
-                    <div className="flex items-center gap-1">
-                      <span>{column.label}</span>
-                      {view.orderColumn === column.name ? (
-                        <span className="text-zinc-400">
-                          {view.orderDirection === "desc" ? "↓" : "↑"}
-                        </span>
-                      ) : null}
-                    </div>
-                    <div className="mt-1 text-left text-[10px] uppercase tracking-[0.16em] text-zinc-500">
-                      {columnTypeLabel(column)}
-                    </div>
-                  </button>
-                  {column.relation ? (
-                    <div className="mt-1 text-left text-[10px] uppercase tracking-[0.16em] text-zinc-500">
-                      {column.relation.displayName}.{column.relation.targetColumn}
-                    </div>
-                  ) : null}
-                </ResizableTh>
-              ))}
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-(--line)">
-            {isPending ? (
-              Array.from({ length: Math.max(10, displayedRows.length) }).map((_, index) => (
-                <tr key={`skeleton-${index}`} className="group relative bg-zinc-900/10 transition">
-                  <td className="w-12 border border-(--line) px-3 py-2 align-middle text-center">
-                    <div className="mx-auto h-4 w-4 animate-pulse rounded-sm bg-zinc-800" />
-                  </td>
-                  {table.columns.map((column) => (
-                    <td key={column.name} className="border border-(--line) px-3 py-4 align-middle">
-                      <div
-                        className="h-3 animate-pulse rounded bg-zinc-800"
-                        style={{
-                          width: `${Math.max(30, Math.random() * 80)}%`,
-                          animationDelay: `${index * 0.05}s`,
-                        }}
-                      />
-                    </td>
-                  ))}
-                </tr>
-              ))
-            ) : displayedRows.length === 0 ? (
-              <tr>
-                <td colSpan={table.columns.length + 1} className="px-6 py-12 text-center text-sm text-(--muted)">
-                  Empty
-                </td>
-              </tr>
-            ) : (
-              view.rows.map((row, index) => {
-                const baseRow = row as RowRecord;
-                const displayedRow = displayedRows[index] as RowRecord;
-                const rowKey = rowKeyFor(primaryKey, baseRow);
-                const isSelected = selectedRowKeys.has(rowKey);
-
-                return (
-                  <tr
-                    key={`${rowKey}:${index}`}
-                    className={`group relative transition ${isSelected ? "bg-zinc-800/80" : "hover:bg-zinc-800/80"}`}
-                  >
-                    <td className="w-12 border border-(--line) px-3 py-2 align-middle text-center">
-                      <SelectionCheckbox
-                        checked={isSelected}
-                        onChange={() =>
-                          setSelectedRowKeys((current) => {
-                            const next = new Set(current);
-                            if (next.has(rowKey)) {
-                              next.delete(rowKey);
-                            } else {
-                              next.add(rowKey);
-                            }
-                            return next;
-                          })}
-                      />
-                    </td>
-                    {table.columns.map((column) => {
-                      const currentEditKey = inlineEditKey(rowKey, column.name);
-                      const stagedEdit = stagedEditsByKey.get(currentEditKey);
-                      const isEditingThisCell =
-                        editingCell?.rowKey === rowKey && editingCell?.columnName === column.name;
-
-                      return (
-                        <td
-                          key={column.name}
-                          className={`relative border border-(--line) px-3 py-2 align-middle text-zinc-200 ${stagedEdit ? "bg-emerald-500/10" : ""}`}
-                        >
-                          {isEditingThisCell ? (
-                            <InlineCellEditor
-                              column={column}
-                              row={displayedRow}
-                              onClose={() => setEditingCell(null)}
-                              onStage={(formData) =>
-                                stageInlineEdit(rowKey, column, baseRow[column.name], formData)}
-                            />
-                          ) : (
-                            <div
-                              className="min-h-6 w-full overflow-hidden whitespace-nowrap"
-                              onDoubleClick={() => {
-                                if (table.supportsCrud && column.name !== table.primaryKey) {
-                                  setEditingCell({ rowKey, columnName: column.name });
-                                  setInlineError(null);
-                                }
-                              }}
-                            >
-                              <CopyValue value={displayedRow[column.name]} />
-                              {stagedEdit ? (
-                                <span className="absolute top-1 right-2 rounded bg-emerald-500/15 px-1.5 py-0.5 text-[9px] uppercase tracking-[0.16em] text-emerald-200">
-                                  Pending
-                                </span>
-                              ) : null}
-                            </div>
-                          )}
-                        </td>
-                      );
-                    })}
-                  </tr>
-                );
-              })
-            )}
-          </tbody>
-        </table>
-      </div>
+      <DataGrid<RowRecord, unknown, string>
+        className="studio-grid min-h-0 flex-1"
+        aria-label={table.displayName}
+        columns={[
+          { ...SelectColumn, width: 48, minWidth: 48, maxWidth: 48 },
+          ...table.columns.map((column): Column<RowRecord> => ({
+            key: column.name,
+            name: <div className="text-xs uppercase">
+              {column.label}
+              <div className="mt-1 text-[10px] tracking-[0.16em] text-zinc-500">{column.enumValues.length > 0 ? "enum" : column.kind}</div>
+              {column.relation && <div className="mt-1 text-[10px] text-zinc-500">
+                {column.relation.displayName}.{column.relation.targetColumn}
+              </div>}
+            </div>,
+            editable: table.supportsCrud && column.name !== primaryKey && !isPending,
+            cellClass: (row) => stagedEditsByKey.has(inlineEditKey(rowKeyFor(primaryKey, row), column.name))
+              ? "studio-pending" : undefined,
+            renderCell: ({ row }) => <CopyValue value={row[column.name]} />,
+            editorOptions: { commitOnOutsideClick: false },
+            renderEditCell: ({ row, rowIdx, onClose }) => <InlineCellEditor
+              column={column}
+              row={row}
+              onClose={() => onClose(false)}
+              onEditingChange={setHasOpenInlineEditor}
+              onStage={(formData) => {
+                stageInlineEdit(rowKeyFor(primaryKey, row), column, view.rows[rowIdx][column.name], formData);
+                onClose(false);
+              }}
+            />,
+          })),
+        ]}
+        rows={isPending ? [] : displayedRows}
+        rowKeyGetter={(row) => rowKeyFor(primaryKey, row)}
+        selectedRows={selectedRowKeys}
+        onSelectedRowsChange={setSelectedRowKeys}
+        defaultColumnOptions={{ width: 150, minWidth: 80, resizable: true, sortable: true }}
+        headerRowHeight={table.columns.some((column) => column.relation) ? 80 : 60}
+        rowHeight={40}
+        sortColumns={view.orderColumn ? [{
+          columnKey: view.orderColumn,
+          direction: view.orderDirection === "desc" ? "DESC" : "ASC",
+        }] : []}
+        onSortColumnsChange={(sortColumns) => {
+          const sort = sortColumns.at(-1);
+          updateSearch({ order_column: sort?.columnKey ?? null, order_direction: sort?.direction.toLowerCase() ?? null });
+        }}
+        onCellKeyDown={({ mode }, event) => {
+          if (mode === "EDIT" && ["Enter", "Escape"].includes(event.key)) event.preventGridDefault();
+        }}
+        renderers={{ noRowsFallback: <div className="col-span-full p-6 text-center text-(--muted)">
+          {isPending ? "Loading…" : "Empty"}
+        </div> }}
+      />
 
       <div className="flex flex-wrap items-center justify-between gap-3 border-t border-(--line) px-6 py-5 text-sm text-(--muted)">
         <div>

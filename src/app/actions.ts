@@ -3,7 +3,6 @@
 import { redirect } from "next/navigation";
 
 import {
-  AdminError,
   applyInlineEdits,
   createRow,
   deleteRow,
@@ -18,10 +17,6 @@ import type {
   RowActionState,
 } from "@/lib/nautilus/types";
 import { userVisibleError } from "@/lib/nautilus/utils";
-
-function actionErrorMessage(error: unknown): string {
-  return error instanceof AdminError ? error.message : userVisibleError(error);
-}
 
 function buildTableUrl(
   tableSlug: string,
@@ -46,7 +41,7 @@ async function runRowAction(
     await action();
   } catch (error) {
     return {
-      errorMessage: actionErrorMessage(error),
+      errorMessage: userVisibleError(error),
       values: Object.fromEntries(
         Array.from(formData.entries(), ([key, value]) => [key, String(value)]),
       ),
@@ -63,10 +58,10 @@ async function redirectAfterMutation(
 ): Promise<void> {
   try {
     await action();
-    redirect(buildTableUrl(tableSlug, searchParamsStr));
   } catch (error) {
-    redirect(buildTableUrl(tableSlug, searchParamsStr, { error: actionErrorMessage(error) }));
+    redirect(buildTableUrl(tableSlug, searchParamsStr, { error: userVisibleError(error) }));
   }
+  redirect(buildTableUrl(tableSlug, searchParamsStr));
 }
 
 export async function createRowAction(
@@ -100,7 +95,7 @@ export async function applyInlineEditsAction(
     };
   } catch (error) {
     return {
-      errorMessage: actionErrorMessage(error),
+      errorMessage: userVisibleError(error),
       appliedCount: error instanceof PartialInlineApplyError ? error.appliedCount : 0,
     };
   }
@@ -115,16 +110,6 @@ export async function deleteRowsAction(
     for (const pk of pks) {
       await deleteRow(tableSlug, pk);
     }
-  });
-}
-
-export async function deleteRowAction(
-  tableSlug: string,
-  pk: string,
-  searchParamsStr: string,
-): Promise<void> {
-  return redirectAfterMutation(tableSlug, searchParamsStr, async () => {
-    await deleteRow(tableSlug, pk);
   });
 }
 

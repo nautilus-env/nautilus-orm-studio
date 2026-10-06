@@ -1,6 +1,6 @@
 import type { ColumnDefinition } from "@/lib/nautilus/types";
 
-export type FilterColumn = Pick<ColumnDefinition, "name" | "dbName" | "label">;
+export type FilterColumn = Pick<ColumnDefinition, "name" | "label">;
 
 export const FILTER_OPERATOR_CONFIG = {
   contains: { syntax: ":", label: "contains", sql: "ILIKE" },
@@ -46,7 +46,7 @@ export function findFilterColumn<T extends FilterColumn>(
   name?: string | null,
 ): T | undefined {
   return name
-    ? columns.find((column) => column.name === name || column.dbName === name)
+    ? columns.find((column) => column.name === name)
     : undefined;
 }
 

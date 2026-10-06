@@ -28,3 +28,33 @@ npm run dev
 ```
 
 Open `http://localhost:3000` to use the studio.
+
+## Large demo
+
+With Node.js 22.13+ (or 24+) and the local Nautilus CLI, run:
+
+```bash
+npm run demo
+```
+
+This creates an isolated SQLite database in `generated/demo` with **64 tables,
+124 foreign keys and 186,600 records**, then starts Studio on port 3001.
+The data includes nullable fields, booleans, numbers, JSON, dates and Unicode text.
+The generated database and schema are ignored by Git.
+
+- [Schema diagram](http://localhost:3001): zoom and pan across all tables and relations;
+  use the minimap to navigate and the fit-view control to return to the overview.
+- [Orders with 1,000 rows per page](http://localhost:3001/tables/orders?page_size=1000):
+  scroll, resize columns, sort, filter and edit a dataset of 50,000 orders.
+- [SQL console](http://localhost:3001/query): try the aggregate query below.
+
+```sql
+SELECT status, COUNT(*) AS orders, ROUND(SUM(amount), 2) AS total
+FROM orders
+GROUP BY status
+ORDER BY orders DESC;
+```
+
+Stop the server with Ctrl+C. Subsequent runs preserve your demo edits.
+To restore the demo data, stop the demo server and run `npm run demo -- --reset`.
+Use `npm run demo:seed` to create only the database and schema.

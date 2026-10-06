@@ -2,7 +2,7 @@
 
 import { useActionState, useState } from "react";
 
-import { CopyValue } from "@/components/studio/copy-value";
+import { ResultGrid } from "@/components/studio/result-grid";
 import { FieldControl } from "@/components/studio/field-control";
 import { serializeRelationValue } from "@/lib/nautilus/presentation";
 import type {
@@ -83,59 +83,17 @@ function RelationPickerModal({
         ) : errorMessage || response?.errorMessage ? (
           <div className="px-6 py-8 text-sm text-red-200">{errorMessage ?? response?.errorMessage}</div>
         ) : response ? (
-          <div className="overflow-auto">
-            <table className="min-w-full text-sm">
-              <thead className="sticky top-0 border-b border-(--line) bg-(--panel) text-left text-xs uppercase tracking-[0.16em] text-(--muted)">
-                <tr>
-                  <th className="px-4 py-3 font-medium">
-                    <span className="sr-only">Select</span>
-                  </th>
-                  {response.table.columns.map((column) => (
-                    <th key={column.name} className="px-4 py-3 font-medium">
-                      {column.label}
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-(--line)">
-                {response.rows.length === 0 ? (
-                  <tr>
-                    <td
-                      colSpan={response.table.columns.length + 1}
-                      className="px-4 py-10 text-center text-sm text-(--muted)"
-                    >
-                      Empty
-                    </td>
-                  </tr>
-                ) : (
-                  response.rows.map((row, index) => {
-                    const rowValue = serializeRelationValue(row[response.table.primaryKey ?? ""]);
-                    return (
-                      <tr
-                        key={`${rowValue}:${index}`}
-                        className={`transition hover:bg-zinc-900/50 ${rowValue === currentValue ? "bg-zinc-900/80" : ""}`}
-                      >
-                        <td className="px-4 py-3 align-middle">
-                          <button
-                            type="button"
-                            className="rounded-2xl border border-(--line) px-3 py-2 text-xs uppercase tracking-[0.16em] text-(--muted) transition hover:border-zinc-400 hover:text-white"
-                            onClick={() => onSelect(rowValue)}
-                          >
-                            Use
-                          </button>
-                        </td>
-                        {response.table.columns.map((column) => (
-                          <td key={column.name} className="px-4 py-3 text-zinc-200">
-                            <CopyValue value={row[column.name]} />
-                          </td>
-                        ))}
-                      </tr>
-                    );
-                  })
-                )}
-              </tbody>
-            </table>
-          </div>
+          <ResultGrid
+            label="Relation picker"
+            rows={response.rows}
+            rowClass={(row) => serializeRelationValue(row[response.table.primaryKey ?? ""]) === currentValue ? "bg-zinc-900/80!" : undefined}
+            columns={[
+              { key: "__select", name: "Select", width: 90, frozen: true, renderCell: ({ row }) =>
+                <button type="button" className="rounded-2xl border border-(--line) px-3 py-1 text-xs text-(--muted) hover:border-zinc-400 hover:text-white"
+                  onClick={() => onSelect(serializeRelationValue(row[response.table.primaryKey ?? ""]))}>Use</button> },
+              ...response.table.columns.map((column) => ({ key: column.name, name: column.label })),
+            ]}
+          />
         ) : null}
       </div>
     </div>

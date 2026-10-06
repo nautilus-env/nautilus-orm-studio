@@ -89,3 +89,26 @@ select,
 textarea {
   font: inherit;
 }
+
+.studio-grid {
+  --rdg-background-color: var(--panel);
+  --rdg-header-background-color: #18181b;
+  --rdg-row-hover-background-color: #27272a;
+  --rdg-row-selected-background-color: #27272a;
+  --rdg-row-selected-hover-background-color: #27272a;
+  --rdg-border-color: var(--line);
+  --rdg-color: var(--text);
+  --rdg-font-size: 14px;
+  --rdg-selection-color: #3b82f6;
+  height: 100%;
+  border: 0;
+}
+
+.studio-grid [role="gridcell"]:has(form) {
+  overflow: visible;
+  z-index: 30;
+}
+
+.studio-grid .studio-pending {
+  background-color: rgb(16 185 129 / 10%);
+}
